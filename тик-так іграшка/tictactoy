@@ -1,0 +1,388 @@
+// Інструкція з запуску програми:
+// нажимаємо кнопку Play-Start the simulation,
+// керування програмою здійснюється жовтою кнопкою ми підтверджуєм виробір комірки гравцем клацнувши 2 рази,
+//зеленою кнопкою ми переставляємо симвом "?" для того щоб обрати комірку на полі.
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define BUTTON_MOVE 2
+#define BUTTON_OK   3
+
+// Декларація для дисплея SSD1306, підключеного до I2C (контакти SDA, SCL)
+#define OLED_RESET     4 
+Adafruit_SSD1306 display(128, 64, &Wire, OLED_RESET);
+ 
+
+int gameStatus = 0;
+int whosplaying = 0; //0 = Arduino, 1 = людина
+
+int winner = -1;  //-1 = гравець, 0 = нічия, 1 = людина, 2 = комп'ютер
+
+
+int board[]={0,0,0,  
+             0,0,0,
+             0,0,0}; //0 = пусто, 1 = людина (нулик), 2 = комп'ютер (хрестик)
+
+void playhuman() {
+     
+    int humanMove = 0;  
+    
+    bool stayInLoop = true;
+    bool showDot = false;
+    long timerPos = millis()-1000;     
+    while (stayInLoop) {  //залишатися в циклі, доки гравець не зробить свій вибір, натиснувши кнопку OK.
+
+         //Якщо поточний "?" позиція недоступна (значення клітинки 1 або 2), цей цикл буде
+         //перемістити "?" до наступної вільної комірки.
+         //ПРИМІТКА: має бути принаймні одна порожня комірка (інакше вона ніколи не вийде з цього циклу [безблокування]).
+         //Це дозволено, тому що якщо всі клітинки використовуються, є переможець або це чернетка.
+         //функція виклику  перевірте її перед продовженням).
+         
+         while (board[humanMove] != 0) {  
+             humanMove ++;
+             if (humanMove >8) humanMove = 0;
+         }
+
+         
+         //це змушує блимати "?" можливо. Кожні 200 мілісекунд умова IF стає істинною, і вона перемикає
+         if (timerPos + 200 < millis()) {  
+             timerPos = millis();
+             showDot = !showDot;    
+             playhuman_showpos( humanMove, showDot);  
+         }
+         
+                  
+         if (digitalRead(BUTTON_MOVE)==HIGH) {   //гравець натискає кнопку підтвердження Move
+             playhuman_showpos( humanMove, false); 
+             humanMove ++; //перемістити "?" до наступної клітинки.
+             
+             while (digitalRead(BUTTON_MOVE)==HIGH); 
+             
+             bool showDot = false;  //ці два рядки гарантують, що "?" відображається
+             long timerPos =-1000;  
+         }
+         
+         if (digitalRead(BUTTON_OK  )==HIGH) stayInLoop = false;  //гравець натиснув кнопку OK і зробив свій вибір
+         delay(100);          
+    }
+        
+    board[humanMove] = 1;  
+    
+}
+
+
+void playhuman_showpos(int humanMove, bool showDot) {   
+  
+   display.setTextSize(2);
+        if (humanMove == 0) display.setCursor( 5, 5); 
+   else if (humanMove == 1) display.setCursor(25, 5); 
+   else if (humanMove == 2) display.setCursor(45, 5); 
+   else if (humanMove == 3) display.setCursor( 5,25); 
+   else if (humanMove == 4) display.setCursor(25,25); 
+   else if (humanMove == 5) display.setCursor(45,25); 
+   else if (humanMove == 6) display.setCursor( 5,45); 
+   else if (humanMove == 7) display.setCursor(25,45); 
+   else if (humanMove == 8) display.setCursor(45,45); 
+   
+   if (showDot) display.setTextColor(WHITE); else display.setTextColor(BLACK);
+   
+   display.print("?");
+   display.display(); 
+}
+ 
+void playcpu() {
+    //ПРИМІТКА: у гравця майже немає шансів виграти, оскільки процесор перевіряє кожен можливий хід
+     // Насправді єдиний спосіб перемогти ЦП – це зробити два виграшних ходу одночасно
+     //Комп'ютер фактично не має реальної стратегії; це просто заважає гравцеві виграти та поставити «X», якщо він виграє
+     //можливий виграшний хід. Якщо виграшний хід неможливий, він просто ставить «X» у випадковому місці
+     
+
+     int cpumove = checkboard(2);  //давайте перевіримо, чи є переможний хід комп'ютера
+
+     if (cpumove >=0) {
+        board[cpumove] = 2;    
+     }
+     else {    
+         cpumove = checkboard(1);  //перевіряємо чи може гравець виграти
+         if (cpumove >=0) {  
+            board[cpumove] = 2;  //цей хід порушує переможний хід гравця
+         }     
+    
+        //немає можливого переможного ходу ні для комп'ютера, ні для людини; комп'ютер єпоставить «X» у випадкову комірку
+        while (cpumove < 0) {               
+           int randomMove = random(10);
+           if (randomMove >=0 && randomMove <=8 && board[randomMove] == 0) {
+               cpumove = randomMove;
+           }        
+        }        
+        board[cpumove] = 2;  
+     } 
+}
+
+int checkboard(int x){   
+
+   //ця функція перевіряє, чи може наступний хід бути виграшним, і повертає комірку, яка буде
+   //комп'ютер використовується, щоб вирішити, чи може він виграти, чи гравець збирається виграти
+   //(і ставить "X", щоб запобігти цьому шансу).
+   //якщо жоден хід не виграє гру, повертається -1
+       if (board[0]==0 && board[1]==x && board[2]==x)  return  0;  //  0 1 1 
+                                                                   //  . . .
+                                                                   //  . . .
+                                                                   
+  else if (board[0]==x && board[1]==0 && board[2]==x)  return  1;  //  1 0 1 
+                                                                   //  . . .
+                                                                   //  . . .
+                                                                   
+  else if (board[0]==x && board[1]==x && board[2]==0)  return  2;  //  1 1 0
+                                                                   //  . . .
+                                                                   //  . . .                                                                   
+  
+  else if (board[3]==0 && board[4]==x && board[5]==x)  return  3;  //  . . .
+                                                                   //  0 1 1
+                                                                   //  . . .
+                                                                     
+  else if (board[3]==x && board[4]==0 && board[5]==x)  return  4;  //  . . .  
+                                                                   //  1 0 1
+                                                                   //  . . .                                                                 
+
+  else if (board[3]==x && board[4]==x && board[5]==0)  return  5;  //  . . .
+                                                                   //  1 1 0
+                                                                   //  . . .
+    
+  else if (board[6]==0 && board[7]==x && board[8]==x)  return  6;  //  . . .
+                                                                   //  . . .
+                                                                   //  0 1 1
+                                                                     
+  else if (board[6]==x && board[7]==0 && board[8]==x)  return  7;  //  . . .  
+                                                                   //  . . .
+                                                                   //  1 0 1
+
+  else if (board[6]==x && board[7]==x && board[8]==0)  return  8;  //  . . .
+                                                                   //  . . .
+                                                                   //  1 1 0
+
+ 
+  else if (board[0]==0 && board[3]==x && board[6]==x)  return  0;  //  0 . .
+                                                                   //  1 . .
+                                                                   //  1 . .
+  
+  else if (board[0]==x && board[3]==0 && board[6]==x)  return  3;  //  1 . .
+                                                                   //  0 . .
+                                                                   //  1 . .
+  
+  else if (board[0]==x && board[3]==x && board[6]==0)  return  6;  //  1 . .
+                                                                   //  1 . .
+                                                                   //  0 . .  
+                                                                   
+
+  else if (board[1]==0 && board[4]==x && board[7]==x)  return  1;  //  . 0 .
+                                                                   //  . 1 .
+                                                                   //  . 1 .
+  
+  else if (board[1]==x && board[4]==0 && board[7]==x)  return  4;  //  . 1 .
+                                                                   //  . 0 .
+                                                                   //  . 1 .  
+  
+  else if (board[1]==x && board[4]==x && board[7]==0)  return  7;  //  . 1 .
+                                                                   //  . 1 .
+                                                                   //  . 0 .  
+                                                                    
+ 
+  else if (board[2]==0 && board[5]==x && board[8]==x)  return  2;  //  . . 0 
+                                                                   //  . . 1 
+                                                                   //  . . 1 
+  
+  else if (board[2]==x && board[5]==0 && board[8]==x)  return  5;  //  . . 1 
+                                                                   //  . . 0 
+                                                                   //  . . 1   
+  
+  else if (board[2]==x && board[5]==x && board[8]==0)  return  8;  //  . . 1 
+                                                                   //  . . 1
+                                                                   //  . . 0
+                                                                    
+ 
+  else if (board[0]==0 && board[4]==x && board[8]==x)  return  0;  //  0 . . 
+                                                                   //  . 1 . 
+                                                                   //  . . 1 
+  
+  else if (board[0]==x && board[4]==0 && board[8]==x)  return  4;  //  1 . . 
+                                                                   //  . 0 .
+                                                                   //  . . 1   
+  
+  else if (board[0]==x && board[4]==x && board[8]==0)  return  8;  //  1 . . 
+                                                                   //  . 1 .
+                                                                   //  . . 0
+
+ 
+  else if (board[2]==0 && board[4]==x && board[6]==x)  return  2;  //  . . 0 
+                                                                   //  . 1 . 
+                                                                   //  1 . . 
+
+  else if (board[2]==x && board[4]==0 && board[6]==x)  return  4;  //  . . 1 
+                                                                   //  . 0 . 
+                                                                   //  1 . . 
+    
+  else if (board[2]==x && board[4]==x && board[6]==0)  return  6;  //  . . 1 
+                                                                   //  . 1 . 
+                                                                   //  0 . . 
+  
+  else                                                 return -1;
+}
+
+void checkWinner() {    //перевірте дошку, щоб побачити, чи є переможець
+  winner = 3;  
+    
+ 
+       if (board[0]==1 && board[1]==1 && board[2]==1)     winner=1;   
+  else if (board[3]==1 && board[4]==1 && board[5]==1)     winner=1;   
+  else if (board[6]==1 && board[7]==1 && board[8]==1)     winner=1;     
+  else if (board[0]==1 && board[3]==1 && board[6]==1)     winner=1;   
+  else if (board[1]==1 && board[4]==1 && board[7]==1)     winner=1;   
+  else if (board[2]==1 && board[5]==1 && board[8]==1)     winner=1;     
+  else if (board[0]==1 && board[4]==1 && board[8]==1)     winner=1;   
+  else if (board[2]==1 && board[4]==1 && board[6]==1)     winner=1; 
+    
+  
+  else if (board[0]==2 && board[1]==2 && board[2]==2)     winner=2;   
+  else if (board[3]==2 && board[4]==2 && board[5]==2)     winner=2;   
+  else if (board[6]==2 && board[7]==2 && board[8]==2)     winner=2;     
+  else if (board[0]==2 && board[3]==2 && board[6]==2)     winner=2;   
+  else if (board[1]==2 && board[4]==2 && board[7]==2)     winner=2;   
+  else if (board[2]==2 && board[5]==2 && board[8]==2)     winner=2;     
+  else if (board[0]==2 && board[4]==2 && board[8]==2)     winner=2;   
+  else if (board[2]==2 && board[4]==2 && board[6]==2)     winner=2;   
+
+  if (winner == 3) {      
+     for(int i=0;i<9;i++) if (board[i]==0) winner=0;  //перевірка чи є ще порожні клітинки
+  }   
+}
+void resetGame() {
+  
+  for(int i=0;i<9;i++) board[i]=0;   ////Скидання плати. 0 = порожня клітинка, 1 = коло гравця, 2 = хрест комп'ютера
+  
+  winner = 0;
+  gameStatus = 0; 
+  
+}
+void boardDrawing() {
+
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+  
+  display.drawFastHLine(0, 21, 64, WHITE); //горизонтальна лінія
+  display.drawFastHLine(0, 42, 64, WHITE);
+
+  display.drawFastVLine(21, 0, 64, WHITE); //вертикальна лінія
+  display.drawFastVLine(42, 0, 64, WHITE);
+
+  //поле з 9 комірок: " ", "o", "x"
+  display.setTextSize(2);
+  display.setCursor( 5, 5); display.print(charBoard(0));  display.setCursor(25, 5); display.print(charBoard(1)); display.setCursor(45, 5); display.print(charBoard(2));
+  display.setCursor( 5,25); display.print(charBoard(3));  display.setCursor(25,25); display.print(charBoard(4)); display.setCursor(45,25); display.print(charBoard(5));
+  display.setCursor( 5,45); display.print(charBoard(6));  display.setCursor(25,45); display.print(charBoard(7)); display.setCursor(45,45); display.print(charBoard(8));  
+  display.display();
+  
+  delay(200); //необхідний для коректного оновлення та подальшого блимання "?" коли черга гравця!!!
+}
+
+
+String charBoard(int x) {  
+       if (board[x] == 0) return " ";       
+       if (board[x] == 1) return "o";
+       if (board[x] == 2) return "x";  
+
+       return "?";  //пастка помилок; але неможливо, щоб він повернув "?" оскільки весь масив board[] ініціалізовано 0
+}
+
+
+void setup() {  //функція виконується один раз під час кожного завантаження чи скидання.
+  
+  randomSeed(analogRead(0));  //скидання поведінки випадкової функції.
+  pinMode(BUTTON_MOVE,INPUT);    //оголошення контакту №2 як входу (підключеного до переміщення кнопки)
+  pinMode(BUTTON_OK  ,INPUT);  //оголошення контакту №3 як входу (підключено до кнопки OK)
+
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); 
+  
+  delay(500);                   //потрібно для правильної ініціалізації відображення
+  display.clearDisplay();      // видалення зображення дисплея
+  display.setTextColor(WHITE);  //встановлення кольору дисплея
+  display.display();           
+  whosplaying = 2;  //вирішити, хто перший гравець
+  while ( whosplaying <0 || whosplaying > 1) whosplaying = random(2);                                                                      
+}
+
+
+
+void loop() {   //основний цикл
+                
+  if (gameStatus == 0){     //крок скидання 
+     resetGame();  
+     boardDrawing();     //порожня дошка 
+     gameStatus = 1;     //початок гри
+     winner = 0;              
+  }
+  if (gameStatus == 1){   //початок гри
+      
+      while (winner == 0) {  //цикл поки ніхто не виграє гру
+        
+        display.setTextSize(2);  
+        
+        if (whosplaying == 0) {  
+          
+          display.setCursor( 72,25); display.print("Go");
+          display.display();
+          delay(1000);
+          
+          playcpu();    //комп'тер робить хід
+          
+          whosplaying =1;    
+        }
+        else { 
+             
+          display.setCursor( 72,25); display.print("You");
+          display.display();          
+          
+          playhuman();  //гравець робить хід
+          
+          whosplaying =0;    
+        }
+
+        boardDrawing();  //оновлення дошки з усіма вже зробленими ходами
+        delay(500);
+        
+        checkWinner();  //перевірка переможця
+
+         if (winner > 0) {
+            
+            
+            if (winner == 3) {              
+                display.setTextSize(2); display.setCursor( 68, 25); 
+                display.print("Draft"); 
+            }
+            else {                
+                //показ хто переміг
+                display.setTextSize(2); display.setCursor( 72, 25); 
+                if (winner == 1) { Serial.println(F("You")); display.print("You"); display.setCursor( 72, 45); display.print("win"); }
+                else             { Serial.println(F("CPU")); display.print("CPU"); display.setCursor( 72, 45); display.print("wins");}
+                
+            }   
+            display.display();                
+            delay(1000);
+            
+            while (digitalRead(BUTTON_MOVE)==LOW && digitalRead(BUTTON_OK  )==LOW);
+                      
+         }
+                 
+      }
+
+//поміняти перший хід на наступний матч між процесором і людиною (по одному на матч)
+      if (whosplaying == 0) whosplaying =1; else whosplaying =0; 
+
+      gameStatus = 0;  //скидання ходу
+      delay(1000);     
+         
+  }
+  
+}
